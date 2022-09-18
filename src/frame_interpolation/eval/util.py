@@ -24,6 +24,7 @@ from . import util
 from absl import logging
 import numpy as np
 import tensorflow as tf
+from loguru import logger
 
 _UINT8_MAX_F = float(np.iinfo(np.uint8).max)
 _CONFIG_FFMPEG_NAME_OR_PATH = 'ffmpeg'
@@ -195,7 +196,7 @@ def interpolate_recursively_from_files(
     """
     n = len(frames)
     for i in range(1, n):
-        print("currently on frame: %d" % i)
+        logger.debug("currently on frame: %d" % i)
         yield from _recursive_generator(
             util.read_image(frames[i - 1]), util.read_image(frames[i]),
             times_to_interpolate, interpolator, block_width, block_height)
