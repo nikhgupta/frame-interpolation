@@ -102,86 +102,98 @@ _OUTPUT_VIDEO = flags.DEFINE_boolean(
     default=False,
     help='If true, creates a video of the frames in the interpolated_frames/ '
     'subdirectory')
+_BLOCK_HEIGHT = flags.DEFINE_integer(
+    name='block_height',
+    default=None,
+    help='An int >= 1, number of patches along height, '
+    'patch_height = height//block_height, should be evenly divisible.')
+_BLOCK_WIDTH = flags.DEFINE_integer(
+    name='block_width',
+    default=None,
+    help='An int >= 1, number of patches along width, '
+    'patch_width = width//block_width, should be evenly divisible.')
 
 # Add other extensions, if not either.
 _INPUT_EXT = ['png', 'jpg', 'jpeg']
 
 
 def _output_frames(frames: List[np.ndarray], frames_dir: str):
-  """Writes PNG-images to a directory.
+    """Writes PNG-images to a directory.
 
-  If frames_dir doesn't exist, it is created. If frames_dir contains existing
-  PNG-files, they are removed before saving the new ones.
+    If frames_dir doesn't exist, it is created. If frames_dir contains existing
+    PNG-files, they are removed before saving the new ones.
 
-  Args:
-    frames: List of images to save.
-    frames_dir: The output directory to save the images.
+    Args:
+      frames: List of images to save.
+      frames_dir: The output directory to save the images.
 
-  """
-  if tf.io.gfile.isdir(frames_dir):
-    # to do: replace this with pathlib invocation
-    old_frames = tf.io.gfile.glob(os.path.join(frames_dir, 'frame_*.png'))
-    if old_frames:
-      logging.info('Removing existing frames from %s.', frames_dir)
-      for old_frame in old_frames:
-        tf.io.gfile.remove(old_frame)
-  else:
-    tf.io.gfile.makedirs(frames_dir)
-  for idx, frame in enumerate(frames):
-    util.write_image(
-        os.path.join(frames_dir, f'frame_{idx:03d}.png'), frame)
-  logging.info('Output frames saved in %s.', frames_dir)
+    """
+    if tf.io.gfile.isdir(frames_dir):
+        # to do: replace this with pathlib invocation
+        old_frames = tf.io.gfile.glob(os.path.join(frames_dir, 'frame_*.png'))
+        if old_frames:
+            logging.info('Removing existing frames from %s.', frames_dir)
+            for old_frame in old_frames:
+                tf.io.gfile.remove(old_frame)
+    else:
+        tf.io.gfile.makedirs(frames_dir)
+    for idx, frame in enumerate(frames):
+        util.write_image(
+            os.path.join(frames_dir, f'frame_{idx:03d}.png'), frame)
+    logging.info('Output frames saved in %s.', frames_dir)
 
 
 class ProcessDirectory(beam.DoFn):
-  """DoFn for running the interpolator on a single directory at the time."""
+    """DoFn for running the interpolator on a single directory at the time."""
 
-  def setup(self):
-    self.interpolator = interpolator_lib.Interpolator(
-        _MODEL_PATH.value)
+    def setup(self):
+        self.interpolator = interpolator_lib.Interpolator(
+            _MODEL_PATH.value)
 
-    if _OUTPUT_VIDEO.value:
-      ffmpeg_path = util.get_ffmpeg_path()
-      media.set_ffmpeg(ffmpeg_path)
+        if _OUTPUT_VIDEO.value:
+            ffmpeg_path = util.get_ffmpeg_path()
+            media.set_ffmpeg(ffmpeg_path)
 
-  def process(self, directory: str):
-    input_frames_list = []
-    for ext in _INPUT_EXT:
-        glob_pat = f'{directory}/*.{ext}'
-        found_frames = tf.io.gfile.glob(glob_pat)
-        found_frames = natsort.natsorted(found_frames)
-        #if found_frames:
-        #    logger.debug(glob_pat)
-        #    logger.debug(f"{len(found_frames)} frames detected.")
-        input_frames_list.append(found_frames)
-    input_frames = functools.reduce(lambda x, y: x + y, input_frames_list)
-    logger.debug(f"{len(input_frames)} frames detected.")
-    logging.info('Generating in-between frames for %s.', directory)
-    frames = list(
-        util.interpolate_recursively_from_files(
-            input_frames, _TIMES_TO_INTERPOLATE.value, self.interpolator))
-    _output_frames(frames, os.path.join(directory, 'interpolated_frames'))
-    if _OUTPUT_VIDEO.value:
-      media.write_video(f'{directory}/interpolated.mp4', frames, fps=_FPS.value)
-      logging.info('Output video saved at %s/interpolated.mp4.', directory)
+    def process(self, directory: str):
+        input_frames_list = []
+        for ext in _INPUT_EXT:
+            glob_pat = f'{directory}/*.{ext}'
+            found_frames = tf.io.gfile.glob(glob_pat)
+            found_frames = natsort.natsorted(found_frames)
+            # if found_frames:
+            #    logger.debug(glob_pat)
+            #    logger.debug(f"{len(found_frames)} frames detected.")
+            input_frames_list.append(found_frames)
+        input_frames = functools.reduce(lambda x, y: x + y, input_frames_list)
+        logger.debug(f"{len(input_frames)} frames detected.")
+        logging.info('Generating in-between frames for %s.', directory)
+        frames = list(
+            util.interpolate_recursively_from_files(
+                input_frames, _TIMES_TO_INTERPOLATE.value, self.interpolator, _BLOCK_HEIGHT.value, _BLOCK_WIDTH.value))
+        _output_frames(frames, os.path.join(directory, 'interpolated_frames'))
+        if _OUTPUT_VIDEO.value:
+            media.write_video(
+                f'{directory}/interpolated.mp4', frames, fps=_FPS.value)
+            logging.info(
+                'Output video saved at %s/interpolated.mp4.', directory)
 
 
 def _run_pipeline() -> None:
-  directories = tf.io.gfile.glob(_PATTERN.value)
-  logger.debug(directories)
-  pipeline = beam.Pipeline('DirectRunner')
-  (pipeline | 'Create directory names' >> beam.Create(directories)  # pylint: disable=expression-not-assigned
-   | 'Process directories' >> beam.ParDo(ProcessDirectory()))
+    directories = tf.io.gfile.glob(_PATTERN.value)
+    logger.debug(directories)
+    pipeline = beam.Pipeline('DirectRunner')
+    (pipeline | 'Create directory names' >> beam.Create(directories)  # pylint: disable=expression-not-assigned
+     | 'Process directories' >> beam.ParDo(ProcessDirectory()))
 
-  result = pipeline.run()
-  result.wait_until_finish()
+    result = pipeline.run()
+    result.wait_until_finish()
 
 
 def main(argv: Sequence[str]) -> None:
-  if len(argv) > 1:
-    raise app.UsageError('Too many command-line arguments.')
-  _run_pipeline()
+    if len(argv) > 1:
+        raise app.UsageError('Too many command-line arguments.')
+    _run_pipeline()
 
 
 if __name__ == '__main__':
-  app.run(main)
+    app.run(main)
